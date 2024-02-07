@@ -1,6 +1,7 @@
 package mr
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log"
@@ -55,6 +56,9 @@ type Coordinator struct {
 	reduceIndexChan   chan int
 	NReduce           int
 	Lock              *sync.RWMutex
+	cancelFunc context.CancelFunc
+	currCtx context.Context
+	httpServer *http.Server
 }
 
 // Your code here -- RPC handlers for the worker to call.
@@ -84,7 +88,7 @@ BEGIN:
 				m.AllFilesStatus[filename] = Allocated
 				m.fileChans[filename] = make(chan struct{}, 1)
 				m.Lock.Unlock()
-				go m.timerForWorker("map", filename)
+				go m.timerForWorker("map", filename,m.currCtx)
 				return nil
 			default:
 				time.Sleep(time.Millisecond * 50)
@@ -101,7 +105,7 @@ BEGIN:
 				m.ReduceIndexStatus[index] = Allocated
 				m.Lock.Unlock()
 				m.fileChans[strconv.Itoa(index)] = make(chan struct{}, 1)
-				go m.timerForWorker("reduce", strconv.Itoa(index))
+				go m.timerForWorker("reduce", strconv.Itoa(index),m.currCtx)
 				return nil
 			default:
 				time.Sleep(time.Millisecond * 50)
@@ -204,17 +208,9 @@ func (m *Coordinator) Register(args *WorkerRigisterArgs, reply *WorkerRegisterRe
 // start a thread that listens for RPCs from worker.go
 
 
-// main/mrmaster.go calls Done() periodically to find out
-// if the entire job has finished.
-func (m *Coordinator) Done() bool {
-	ret := false
 
-	// Your code here.
 
-	return ret
-}
-
-func (m *Coordinator) timerForWorker(taskType, identify string) {
+func (m *Coordinator) timerForWorker(taskType, identify string, ctx context.Context) {
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
 	defer close(m.fileChans[identify])
@@ -258,6 +254,8 @@ func (m *Coordinator) timerForWorker(taskType, identify string) {
 				}
 				return
 			}
+		case <- ctx.Done():
+			return
 		}
 
 	}
@@ -321,6 +319,28 @@ func (m *Coordinator) generateTask() {
 
 }
 
+// main/mrmaster.go calls Done() periodically to find out
+// if the entire job has finished.
+func (m *Coordinator) Done() bool {
+	ret := false
+	// Your code here.
+	m.Lock.RLock()
+	progress := m.HandleProgress
+	m.Lock.RUnlock()
+	if progress == Done {
+		timeoutCtx, timeoutCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer timeoutCancel()
+		m.httpServer.Shutdown(timeoutCtx)
+		close(m.mapCheckChan)
+		close(m.reduceCheckChan)
+		close(m.mapFileChan)
+		close(m.reduceIndexChan)
+		m.cancelFunc()
+		ret = true
+	}
+	return ret
+}
+
 // create a Master.
 // main/mrmaster.go calls this function.
 // nReduce is the number of reduce tasks to use.
@@ -333,6 +353,7 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	for i := 0; i < nReduce; i++ {
 		r[i] = UnAllocated
 	}
+	ctx,cancel := context.WithCancel(context.Background())
 	m := Coordinator{
 		Files:             files,
 		AllFilesStatus:    t,
@@ -348,13 +369,14 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 		reduceIndexChan:   make(chan int, nReduce),
 		fileChans:         make(map[string]chan struct{}),
 		NReduce:           nReduce,
+		currCtx: ctx ,
+		cancelFunc: cancel,
 		Lock:              new(sync.RWMutex),
 	}
 	go m.generateTask()
 
 	// Your code here.
-
-	m.server()
+	m.httpServer = m.server()
 	return &m
 }
 
@@ -362,7 +384,7 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 //
 // start a thread that listens for RPCs from worker.go
 //
-func (m *Coordinator) server() {
+func (m *Coordinator) server() *http.Server {
 	rpc.Register(m)
 	rpc.HandleHTTP()
 	//l, e := net.Listen("tcp", ":1234")
@@ -372,6 +394,12 @@ func (m *Coordinator) server() {
 	if e != nil {
 		log.Fatal("listen error:", e)
 	}
-	go http.Serve(l, nil)
+	server := &http.Server{
+		Handler: nil,
+		ReadTimeout:    30 * time.Second,
+		WriteTimeout:   30* time.Second,
+	}
+	go server.Serve(l)
+	return server
 }
 
