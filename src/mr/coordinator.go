@@ -72,41 +72,40 @@ func (m *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
 }
 
 func (m *Coordinator) GetTask(args *GetTaskArgs, reply *GetTaskReply) error {
-DONE:
-	m.Lock.RLock()
-	progress := m.HandleProgress
-	m.Lock.RUnlock()
-	if progress == Done {
-		reply.TaskType = "done"
-		reply.NReduce = m.NReduce
-		return nil
-	}
-	select {
-	case filename := <-m.mapFileChan:
-		reply.MapFilename = filename
-		reply.TaskType = "map"
-		reply.NReduce = m.NReduce
-		m.Lock.Lock()
-		m.AllFilesStatus[filename] = Allocated
-		m.fileChans[filename] = make(chan struct{}, 1)
-		m.Lock.Unlock()
-		go m.timerForWorker("map", filename, m.currCtx)
-		return nil
-	case index := <-m.reduceIndexChan:
-		reply.TaskType = "reduce"
-		reply.NReduce = m.NReduce
-		reply.ReduceFiles = m.ReduceFiles[index]
-		reply.ReduceIndex = index
-		m.Lock.Lock()
-		m.ReduceIndexStatus[index] = Allocated
-		m.Lock.Unlock()
-		m.fileChans[strconv.Itoa(index)] = make(chan struct{}, 1)
-		go m.timerForWorker("reduce", strconv.Itoa(index), m.currCtx)
-		return nil
-	default: //暂时没有任务
-		time.Sleep(time.Millisecond*50)
-		goto DONE
-
+	for {
+		m.Lock.RLock()
+		progress := m.HandleProgress
+		m.Lock.RUnlock()
+		if progress == Done {
+			reply.TaskType = "done"
+			reply.NReduce = m.NReduce
+			return nil
+		}
+		select {
+		case filename := <-m.mapFileChan:
+			reply.MapFilename = filename
+			reply.TaskType = "map"
+			reply.NReduce = m.NReduce
+			m.Lock.Lock()
+			m.AllFilesStatus[filename] = Allocated
+			m.fileChans[filename] = make(chan struct{}, 1)
+			m.Lock.Unlock()
+			go m.timerForWorker("map", filename, m.currCtx)
+			return nil
+		case index := <-m.reduceIndexChan:
+			reply.TaskType = "reduce"
+			reply.NReduce = m.NReduce
+			reply.ReduceFiles = m.ReduceFiles[index]
+			reply.ReduceIndex = index
+			m.Lock.Lock()
+			m.ReduceIndexStatus[index] = Allocated
+			m.Lock.Unlock()
+			m.fileChans[strconv.Itoa(index)] = make(chan struct{}, 1)
+			go m.timerForWorker("reduce", strconv.Itoa(index), m.currCtx)
+			return nil
+		default: //暂时没有任务
+			time.Sleep(time.Millisecond * 50)
+		}
 	}
 	// select {
 	// case filename := <-m.mapFileChan:
