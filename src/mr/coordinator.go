@@ -56,9 +56,9 @@ type Coordinator struct {
 	reduceIndexChan   chan int
 	NReduce           int
 	Lock              *sync.RWMutex
-	cancelFunc context.CancelFunc
-	currCtx context.Context
-	httpServer *http.Server
+	cancelFunc        context.CancelFunc
+	currCtx           context.Context
+	httpServer        *http.Server
 }
 
 // Your code here -- RPC handlers for the worker to call.
@@ -72,50 +72,41 @@ func (m *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
 }
 
 func (m *Coordinator) GetTask(args *GetTaskArgs, reply *GetTaskReply) error {
-BEGIN:
-	for {
-		m.Lock.RLock()
-		currentProgress := m.HandleProgress
-		m.Lock.RUnlock()
-		switch currentProgress {
-		case Maping:
-			select {
-			case filename := <-m.mapFileChan:
-				reply.MapFilename = filename
-				reply.TaskType = "map"
-				reply.NReduce = m.NReduce
-				m.Lock.Lock()
-				m.AllFilesStatus[filename] = Allocated
-				m.fileChans[filename] = make(chan struct{}, 1)
-				m.Lock.Unlock()
-				go m.timerForWorker("map", filename,m.currCtx)
-				return nil
-			default:
-				time.Sleep(time.Millisecond * 50)
-				goto BEGIN
-			}
-		case Reducing:
-			select {
-			case index := <-m.reduceIndexChan:
-				reply.TaskType = "reduce"
-				reply.NReduce = m.NReduce
-				reply.ReduceFiles = m.ReduceFiles[index]
-				reply.ReduceIndex = index
-				m.Lock.Lock()
-				m.ReduceIndexStatus[index] = Allocated
-				m.Lock.Unlock()
-				m.fileChans[strconv.Itoa(index)] = make(chan struct{}, 1)
-				go m.timerForWorker("reduce", strconv.Itoa(index),m.currCtx)
-				return nil
-			default:
-				time.Sleep(time.Millisecond * 50)
-				goto BEGIN
-			}
-		case Done:
-			reply.TaskType = "done"
-			reply.NReduce = m.NReduce
-			return nil
-		}
+DONE:
+	m.Lock.RLock()
+	progress := m.HandleProgress
+	m.Lock.RUnlock()
+	if progress == Done {
+		reply.TaskType = "done"
+		reply.NReduce = m.NReduce
+		return nil
+	}
+	select {
+	case filename := <-m.mapFileChan:
+		reply.MapFilename = filename
+		reply.TaskType = "map"
+		reply.NReduce = m.NReduce
+		m.Lock.Lock()
+		m.AllFilesStatus[filename] = Allocated
+		m.fileChans[filename] = make(chan struct{}, 1)
+		m.Lock.Unlock()
+		go m.timerForWorker("map", filename, m.currCtx)
+		return nil
+	case index := <-m.reduceIndexChan:
+		reply.TaskType = "reduce"
+		reply.NReduce = m.NReduce
+		reply.ReduceFiles = m.ReduceFiles[index]
+		reply.ReduceIndex = index
+		m.Lock.Lock()
+		m.ReduceIndexStatus[index] = Allocated
+		m.Lock.Unlock()
+		m.fileChans[strconv.Itoa(index)] = make(chan struct{}, 1)
+		go m.timerForWorker("reduce", strconv.Itoa(index), m.currCtx)
+		return nil
+	default: //暂时没有任务
+		time.Sleep(time.Millisecond*50)
+		goto DONE
+
 	}
 	// select {
 	// case filename := <-m.mapFileChan:
@@ -207,9 +198,6 @@ func (m *Coordinator) Register(args *WorkerRigisterArgs, reply *WorkerRegisterRe
 
 // start a thread that listens for RPCs from worker.go
 
-
-
-
 func (m *Coordinator) timerForWorker(taskType, identify string, ctx context.Context) {
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
@@ -222,7 +210,7 @@ func (m *Coordinator) timerForWorker(taskType, identify string, ctx context.Cont
 				m.Lock.RLock()
 				defer m.Lock.RUnlock()
 				if m.AllFilesStatus[identify] != Finished {
-					fmt.Printf("map %v handle timeout,reschedule\n",identify)
+					fmt.Printf("map %v handle timeout,reschedule\n", identify)
 					m.mapFileChan <- identify
 				}
 			} else if taskType == "reduce" {
@@ -230,7 +218,7 @@ func (m *Coordinator) timerForWorker(taskType, identify string, ctx context.Cont
 				m.Lock.RLock()
 				defer m.Lock.RUnlock()
 				if m.ReduceIndexStatus[index] != Finished {
-					fmt.Printf("reduce %v handle timeout,reschedule\n",identify)
+					fmt.Printf("reduce %v handle timeout,reschedule\n", identify)
 					m.reduceIndexChan <- index
 				}
 			}
@@ -240,7 +228,7 @@ func (m *Coordinator) timerForWorker(taskType, identify string, ctx context.Cont
 				m.Lock.RLock()
 				defer m.Lock.RUnlock()
 				if m.AllFilesStatus[identify] != Finished {
-					fmt.Printf("map %v handle failed,reschedule\n",identify)
+					fmt.Printf("map %v handle failed,reschedule\n", identify)
 					m.mapFileChan <- identify
 				}
 				return
@@ -249,12 +237,12 @@ func (m *Coordinator) timerForWorker(taskType, identify string, ctx context.Cont
 				m.Lock.RLock()
 				defer m.Lock.RUnlock()
 				if m.ReduceIndexStatus[index] != Finished {
-					fmt.Printf("reduce %v handle failed,reschedule\n",identify)
+					fmt.Printf("reduce %v handle failed,reschedule\n", identify)
 					m.reduceIndexChan <- index
 				}
 				return
 			}
-		case <- ctx.Done():
+		case <-ctx.Done():
 			return
 		}
 
@@ -353,7 +341,7 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	for i := 0; i < nReduce; i++ {
 		r[i] = UnAllocated
 	}
-	ctx,cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(context.Background())
 	m := Coordinator{
 		Files:             files,
 		AllFilesStatus:    t,
@@ -369,8 +357,8 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 		reduceIndexChan:   make(chan int, nReduce),
 		fileChans:         make(map[string]chan struct{}),
 		NReduce:           nReduce,
-		currCtx: ctx ,
-		cancelFunc: cancel,
+		currCtx:           ctx,
+		cancelFunc:        cancel,
 		Lock:              new(sync.RWMutex),
 	}
 	go m.generateTask()
@@ -380,10 +368,7 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	return &m
 }
 
-
-//
 // start a thread that listens for RPCs from worker.go
-//
 func (m *Coordinator) server() *http.Server {
 	rpc.Register(m)
 	rpc.HandleHTTP()
@@ -395,11 +380,10 @@ func (m *Coordinator) server() *http.Server {
 		log.Fatal("listen error:", e)
 	}
 	server := &http.Server{
-		Handler: nil,
-		ReadTimeout:    30 * time.Second,
-		WriteTimeout:   30* time.Second,
+		Handler:      nil,
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 30 * time.Second,
 	}
 	go server.Serve(l)
 	return server
 }
-
